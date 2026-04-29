@@ -2,6 +2,7 @@ package com.askinfra.backend.controllers;
 
 import java.util.List;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.askinfra.backend.models.ChatRequest;
@@ -10,26 +11,55 @@ import com.askinfra.backend.models.ChatResponse;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+
 
 @RestController
 public class ChatController {
 
     private final ChatClient chatClient;
+    private final ChatMemory chatMemory;
 
-    ChatController(ChatClient chatClient) {
+    ChatController(ChatClient chatClient, ChatMemory chatMemory) {
         this.chatClient = chatClient;
+        this.chatMemory = chatMemory;
     }
 
     @PostMapping("/api/chat")
     public ChatResponse chat(@RequestBody ChatRequest request) {
         String selectedMode = resolveMode(request.getMode());
+        String sessionId = request.getSessionId();
 
-        String reply = chatClient
-                        .prompt()
-                        .system(systemPromptFor(selectedMode))
-                        .user(request.getMessage())
-                        .call()
-                        .content();
+        if (sessionId != null && !sessionId.isBlank()) {
+            chatMemory.add(sessionId, new UserMessage(request.getMessage()));
+        }
+
+        List<Message> history = (sessionId != null && !sessionId.isBlank()) ? chatMemory.get(sessionId) : List.of();
+
+        String reply;
+        if (!history.isEmpty()) {
+            // History exists, include it in the prompt
+            reply = chatClient
+                    .prompt()
+                    .system(systemPromptFor(selectedMode))
+                    .messages(history)
+                    .call()
+                    .content();
+
+        } 
+        else {
+            reply = chatClient
+                    .prompt()
+                    .system(systemPromptFor(selectedMode))
+                    .user(request.getMessage())
+                    .call()
+                    .content();
+        }
+        if (sessionId != null && !sessionId.isBlank()) {
+            chatMemory.add(sessionId, new AssistantMessage(reply));
+        }
         
         return ChatResponse.builder()
                 .reply(reply)
