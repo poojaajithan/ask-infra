@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.askinfra.backend.models.ChatRequest;
 import com.askinfra.backend.models.ChatResponse;
-
+import com.askinfra.backend.services.TelemetryService;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
@@ -21,44 +21,56 @@ public class ChatController {
 
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
+    private final TelemetryService telemetryService;
 
-    ChatController(ChatClient chatClient, ChatMemory chatMemory) {
+    ChatController(ChatClient chatClient, ChatMemory chatMemory, TelemetryService telemetryService) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
+        this.telemetryService = telemetryService;
     }
 
     @PostMapping("/api/chat")
     public ChatResponse chat(@RequestBody ChatRequest request) {
         String selectedMode = resolveMode(request.getMode());
         String sessionId = request.getSessionId();
+        String message = request.getMessage();
 
-        if (sessionId != null && !sessionId.isBlank()) {
-            chatMemory.add(sessionId, new UserMessage(request.getMessage()));
+        if (message == null || message.isBlank()) {
+            throw new IllegalArgumentException("message must not be blank");
         }
 
-        List<Message> history = (sessionId != null && !sessionId.isBlank()) ? chatMemory.get(sessionId) : List.of();
+        boolean hasSession = sessionId != null && !sessionId.isBlank();
 
+        
         String reply;
-        if (!history.isEmpty()) {
+        if ("telemetry".equals(selectedMode)) {
+            reply = telemetryService.answerTelemetryQuestion(message);
+            return ChatResponse.builder()
+                    .reply(reply)
+                    .mode(selectedMode)
+                    .sources(List.of())
+                    .build();
+        } 
+        else if (hasSession) {
             // History exists, include it in the prompt
+            List<Message> history = chatMemory.get(sessionId);
             reply = chatClient
                     .prompt()
                     .system(systemPromptFor(selectedMode))
                     .messages(history)
+                    .user(message)
                     .call()
                     .content();
-
+            chatMemory.add(sessionId, new UserMessage(message));
+            chatMemory.add(sessionId, new AssistantMessage(reply));
         } 
         else {
             reply = chatClient
                     .prompt()
                     .system(systemPromptFor(selectedMode))
-                    .user(request.getMessage())
+                    .user(message)
                     .call()
                     .content();
-        }
-        if (sessionId != null && !sessionId.isBlank()) {
-            chatMemory.add(sessionId, new AssistantMessage(reply));
         }
         
         return ChatResponse.builder()
@@ -74,7 +86,7 @@ public class ChatController {
         }
         
         return switch(mode.toLowerCase()) {
-            case "chat", "explain", "ops" -> mode.toLowerCase();
+            case "chat", "explain", "ops", "telemetry" -> mode.toLowerCase();
             default -> "chat";
         };
     }
